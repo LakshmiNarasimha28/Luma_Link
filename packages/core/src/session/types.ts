@@ -1,19 +1,40 @@
 /**
- * Session management boundaries and lifecycle types for LumaLink.
+ * Session management boundaries, announcement messages, and lifecycle types for LumaLink.
  */
 
-import type { TransferMode } from '../protocol/types.js';
 import type { FecScheme } from '../fec/types.js';
+import type { SecurityMode } from '../security/types.js';
 
 export type SessionRole = 'sender' | 'receiver';
 
 export type SessionState =
-  'idle' | 'negotiating' | 'transmitting' | 'receiving' | 'completed' | 'failed';
+  | 'idle'
+  | 'announcing'
+  | 'authorizing'
+  | 'transmitting'
+  | 'receiving'
+  | 'completed'
+  | 'failed'
+  | 'aborted';
+
+export interface SessionAnnouncement {
+  readonly sessionId: string;
+  readonly mode: SecurityMode;
+  readonly senderDeviceId: string;
+  readonly senderPublicKey: Uint8Array;
+  readonly fileName: string;
+  readonly fileSize: number;
+  readonly sha256Digest: string;
+  readonly symbolSize: number;
+  readonly symbolsPerBlock: number;
+  readonly totalBlocks: number;
+  readonly timestamp: number;
+}
 
 export interface SessionConfig {
   readonly sessionId: string;
   readonly role: SessionRole;
-  readonly mode: TransferMode;
+  readonly mode: SecurityMode;
   readonly fecScheme: FecScheme;
 }
 
