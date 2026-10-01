@@ -12,3 +12,4 @@ export * from './security/index.js';
 export * from './session/index.js';
 export * from './transfer/index.js';
 export * from './storage/index.js';
+export * from './channel/index.js';
