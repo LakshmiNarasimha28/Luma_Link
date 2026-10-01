@@ -13,3 +13,4 @@ export * from './session/index.js';
 export * from './transfer/index.js';
 export * from './storage/index.js';
 export * from './channel/index.js';
+export * from './visual/index.js';
