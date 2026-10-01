@@ -9,6 +9,7 @@
     "build": "pnpm --filter \"@lumalink/*\" run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "bench": "node --experimental-strip-types benchmarks/phase1-transfer.bench.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{ts,js,mjs,json,md,yml,yaml}\"",
