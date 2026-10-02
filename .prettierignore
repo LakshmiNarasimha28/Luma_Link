@@ -5,3 +5,4 @@ out
 coverage
 .pnpm-store
 pnpm-lock.yaml
+scripts/display-harness/qrcode.min.js

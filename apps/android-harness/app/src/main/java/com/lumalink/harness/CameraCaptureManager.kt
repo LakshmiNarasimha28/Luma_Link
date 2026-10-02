@@ -82,18 +82,27 @@ class CameraCaptureManager(
         val arrivalTimeMs = System.currentTimeMillis()
         val seq = frameSequence.incrementAndGet()
 
-        try {
-            val capturedFrame = OpticalFrameAdapter.extractLuminancePlane(
+        val capturedFrame = try {
+            OpticalFrameAdapter.extractLuminancePlane(
                 image = imageProxy,
                 sequenceNumber = seq,
                 timestampMs = arrivalTimeMs
             )
-            onFrameCaptured(capturedFrame)
         } catch (e: Exception) {
-            Log.e(TAG, "Frame processing error: ${e.message}", e)
+            Log.e(TAG, "Frame extraction error: ${e.message}", e)
+            null
         } finally {
-            // CRITICAL: Always close image to return buffer to camera HAL pipeline
+            // CRITICAL: Immediately close imageProxy to release the hardware buffer
+            // back to the CameraX HAL pipeline without waiting for downstream decode.
             imageProxy.close()
+        }
+
+        if (capturedFrame != null) {
+            try {
+                onFrameCaptured(capturedFrame)
+            } catch (e: Exception) {
+                Log.e(TAG, "Frame delivery error: ${e.message}", e)
+            }
         }
     }
 

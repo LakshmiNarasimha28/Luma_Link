@@ -57,4 +57,7 @@ dependencies {
 
     // Pure Java QR Code Decoder (Zero C++, Zero Rust, Zero ML)
     implementation("com.google.zxing:core:3.5.3")
+
+    // Unit Testing
+    testImplementation("junit:junit:4.13.2")
 }

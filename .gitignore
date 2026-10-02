@@ -50,3 +50,7 @@ ENV/
 tmp/
 temp/
 *.log
+
+
+apps/android-harness/.gradle/
+apps/android-harness/local.properties

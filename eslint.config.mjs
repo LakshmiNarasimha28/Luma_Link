@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/coverage/**',
       'pnpm-lock.yaml',
+      'scripts/display-harness/qrcode.min.js',
     ],
   },
   {
