@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bench": "node --experimental-strip-types benchmarks/phase1-transfer.bench.ts",
+    "bench:phase4": "node --experimental-strip-types benchmarks/phase4-optical.bench.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{ts,js,mjs,json,md,yml,yaml}\"",

@@ -14,3 +14,4 @@ export * from './transfer/index.js';
 export * from './storage/index.js';
 export * from './channel/index.js';
 export * from './visual/index.js';
+export * from './optical/index.js';

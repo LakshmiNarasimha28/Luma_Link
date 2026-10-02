@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LumaLink — Optical Sender Display Harness</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d1117;
+      color: #c9d1d9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    header {
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 1.4rem;
+      color: #58a6ff;
+      margin-bottom: 4px;
+    }
+    p.subtitle {
+      font-size: 0.85rem;
+      color: #8b949e;
+    }
+    .display-container {
+      background: #ffffff;
+      padding: 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+    }
+    .hud-bar {
+      margin-top: 12px;
+      color: #1f2328;
+      font-size: 0.9rem;
+      font-weight: bold;
+    }
+    .controls {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 16px;
+      width: 100%;
+      max-width: 600px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    .control-group {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    label {
+      font-size: 0.75rem;
+      color: #8b949e;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    select, input, button {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #f0f6fc;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-family: inherit;
+    }
+    select:focus, input:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+    button.primary {
+      background: #238636;
+      border-color: rgba(240, 246, 252, 0.1);
+      color: #ffffff;
+      font-weight: bold;
+      cursor: pointer;
+      grid-column: span 2;
+      padding: 10px;
+    }
+    button.primary:hover {
+      background: #2ea043;
+    }
+    button.primary.active {
+      background: #da3633;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>LumaLink Optical Sender Display Harness</h1>
+    <p class="subtitle">Controlled Physical Screen Presentation for Camera Characterization (Phase 4)</p>
+  </header>
+
+  <div class="display-container">
+    <canvas id="qrCanvas" width="400" height="400"></canvas>
+    <div class="hud-bar" id="hudBar">Frame 1/4 | A | 66 ms (15 Hz) | R=1</div>
+  </div>
+
+  <div class="controls">
+    <div class="control-group">
+      <label for="intervalSelect">Frame Presentation Interval</label>
+      <select id="intervalSelect">
+        <option value="66">66 ms (~15 Hz)</option>
+        <option value="50">50 ms (~20 Hz)</option>
+        <option value="33">33 ms (~30 Hz)</option>
+        <option value="100">100 ms (~10 Hz)</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label for="repetitionSelect">Repetition Factor (R)</label>
+      <select id="repetitionSelect">
+        <option value="1">R = 1 (Sequential)</option>
+        <option value="2">R = 2 (Double hold)</option>
+        <option value="3">R = 3 (Triple hold)</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label for="eccSelect">Error Correction (ECC)</label>
+      <select id="eccSelect">
+        <option value="M">Level M (~15%)</option>
+        <option value="L">Level L (~7%)</option>
+        <option value="Q">Level Q (~25%)</option>
+        <option value="H">Level H (~30%)</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label for="scaleSelect">Pixels / Module (Scale)</label>
+      <select id="scaleSelect">
+        <option value="8">8 px/mod (360-700px)</option>
+        <option value="6">6 px/mod (270-500px)</option>
+        <option value="10">10 px/mod (450-900px)</option>
+        <option value="4">4 px/mod (Compact)</option>
+      </select>
+    </div>
+
+    <div class="control-group" style="grid-column: span 2;">
+      <label for="sequenceSelect">Test Sequence</label>
+      <select id="sequenceSelect">
+        <option value="ABCD">Sequential Test Pattern: Frame A, Frame B, Frame C, Frame D</option>
+        <option value="FOUNTAIN_8">Fountain Symbol Simulation (8 distinct block packets)</option>
+        <option value="SINGLE_FRAME">Single Static QR (Focus & Distance Calibration)</option>
+      </select>
+    </div>
+
+    <button id="toggleBtn" class="primary">Start Display Sequence</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('qrCanvas');
+    const hudBar = document.getElementById('hudBar');
+    const toggleBtn = document.getElementById('toggleBtn');
+    const intervalSelect = document.getElementById('intervalSelect');
+    const repetitionSelect = document.getElementById('repetitionSelect');
+    const eccSelect = document.getElementById('eccSelect');
+    const scaleSelect = document.getElementById('scaleSelect');
+    const sequenceSelect = document.getElementById('sequenceSelect');
+
+    let isPlaying = false;
+    let timerId = null;
+    let currentFrameIndex = 0;
+
+    const sequences = {
+      ABCD: ['FRAME_A', 'FRAME_B', 'FRAME_C', 'FRAME_D'],
+      FOUNTAIN_8: [
+        'LUMA:s01:b00:sym01', 'LUMA:s01:b00:sym02', 'LUMA:s01:b00:sym03', 'LUMA:s01:b00:sym04',
+        'LUMA:s01:b00:sym05', 'LUMA:s01:b00:sym06', 'LUMA:s01:b00:sym07', 'LUMA:s01:b00:sym08'
+      ],
+      SINGLE_FRAME: ['LUMALINK-OPTICAL-CALIBRATION-V4']
+    };
+
+    function renderQr(text) {
+      const ecc = eccSelect.value;
+      const scale = parseInt(scaleSelect.value, 10);
+
+      QRCode.toCanvas(canvas, text, {
+        errorCorrectionLevel: ecc,
+        scale: scale,
+        margin: 4,
+        color: { dark: '#000000', light: '#ffffff' }
+      }, (err) => {
+        if (err) console.error(err);
+      });
+    }
+
+    function tick() {
+      if (!isPlaying) return;
+
+      const seqKey = sequenceSelect.value;
+      const list = sequences[seqKey];
+      const payload = list[currentFrameIndex % list.length];
+      const interval = parseInt(intervalSelect.value, 10);
+      const rep = parseInt(repetitionSelect.value, 10);
+
+      renderQr(payload);
+      hudBar.textContent = `Frame ${(currentFrameIndex % list.length) + 1}/${list.length} | ${payload} | ${interval} ms (${Math.round(1000/interval)} Hz) | R=${rep}`;
+
+      currentFrameIndex++;
+      timerId = setTimeout(tick, interval * rep);
+    }
+
+    toggleBtn.addEventListener('click', () => {
+      isPlaying = !isPlaying;
+      if (isPlaying) {
+        toggleBtn.textContent = 'Stop Display';
+        toggleBtn.classList.add('active');
+        currentFrameIndex = 0;
+        tick();
+      } else {
+        toggleBtn.textContent = 'Start Display Sequence';
+        toggleBtn.classList.remove('active');
+        if (timerId) clearTimeout(timerId);
+      }
+    });
+
+    // Initial render
+    renderQr(sequences.ABCD[0]);
+  </script>
+</body>
+</html>

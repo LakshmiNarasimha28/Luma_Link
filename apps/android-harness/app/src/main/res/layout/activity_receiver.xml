@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <!-- CameraX Full-Screen Preview -->
+    <androidx.camera.view.PreviewView
+        android:id="@+id/previewView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Reticle targeting box for screen alignment -->
+    <View
+        android:id="@+id/targetReticle"
+        android:layout_width="280dp"
+        android:layout_height="280dp"
+        android:background="@android:drawable/dialog_holo_light_frame"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- Measurement HUD Overlay -->
+    <LinearLayout
+        android:id="@+id/hudOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="#B0000000"
+        android:padding="12dp"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LumaLink Optical Receiver Measurement HUD"
+            android:textColor="#00FFCC"
+            android:textStyle="bold"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tvFrameMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Frame: Seq #0 | 0.0 FPS | 1280x720 | Jitter: 0.0 ms"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="4dp" />
+
+        <TextView
+            android:id="@+id/tvQrMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="QR: Idle | Latency: 0.0 ms | Ver: - | ECC: -"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tvDuplicateClassification"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Classification: NONE"
+            android:textColor="#FFCC00"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tvChannelMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Channel: Rx: 0 | Novel: 0 | CamDup: 0 | Rep: 0 | Rate: 0.0%"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+        <TextView
+            android:id="@+id/tvGoodputMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Goodput: L1 Codec: 0 B/s | L2 Optical: 0 B/s | L3 E2E: 0 B/s"
+            android:textColor="#66FF66"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+    </LinearLayout>
+
+    <!-- Bottom Controls -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#D0000000"
+        android:padding="8dp"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <Button
+            android:id="@+id/btnToggleAfAe"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Lock AF/AE"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnResetMetrics"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Reset Stats"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnLaunchSender"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Sender Mode"
+            android:textSize="11sp" />
+
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
