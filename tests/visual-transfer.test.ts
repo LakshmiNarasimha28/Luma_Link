@@ -3,12 +3,12 @@ import {
   FileBlocker,
   SenderSession,
   ReceiverSession,
-  NodeCryptoProvider,
   computeSha256,
   QrVisualCodec,
   VisualPacketCodec,
   applySaltAndPepperNoise,
 } from '@lumalink/core';
+import { NodeCryptoProvider } from '@lumalink/core/node';
 
 describe('Phase 3 End-to-End Visual Pipeline Integration', () => {
   const crypto = new NodeCryptoProvider();

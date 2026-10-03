@@ -1,4 +1,5 @@
-import { FileManifest, computeSha256 } from './blocker.js';
+import { FileManifest } from './blocker.js';
+import { Hasher, defaultHasher } from './hasher.js';
 
 export class ReassemblyError extends Error {
   constructor(message: string) {
@@ -42,10 +43,12 @@ export interface ReassemblyResult {
  */
 export class FileReassembler {
   readonly manifest: FileManifest;
+  readonly hasher: Hasher;
   private readonly blocks: Map<number, Uint8Array> = new Map();
 
-  constructor(manifest: FileManifest) {
+  constructor(manifest: FileManifest, hasher: Hasher = defaultHasher) {
     this.manifest = manifest;
+    this.hasher = hasher;
   }
 
   /**
@@ -93,7 +96,7 @@ export class FileReassembler {
 
     if (this.manifest.fileSize === 0) {
       const empty = new Uint8Array(0);
-      const hash = computeSha256(empty);
+      const hash = this.hasher.hashSha256(empty);
       if (hash !== this.manifest.sha256Digest) {
         throw new Sha256MismatchError(this.manifest.sha256Digest, hash);
       }
@@ -119,7 +122,7 @@ export class FileReassembler {
     }
 
     // Verify SHA-256
-    const actualDigest = computeSha256(assembled);
+    const actualDigest = this.hasher.hashSha256(assembled);
     if (actualDigest !== this.manifest.sha256Digest) {
       throw new Sha256MismatchError(this.manifest.sha256Digest, actualDigest);
     }

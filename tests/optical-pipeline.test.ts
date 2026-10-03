@@ -3,13 +3,13 @@ import {
   FileBlocker,
   SenderSession,
   ReceiverSession,
-  NodeCryptoProvider,
   computeSha256,
   SenderDisplayHarness,
   ReceiverMeasurementHarness,
   PhysicalOpticalChannelSimulator,
   type TransportPacket,
 } from '@lumalink/core';
+import { NodeCryptoProvider } from '@lumalink/core/node';
 
 describe('Phase 4 Physical Optical Channel Integration', () => {
   const crypto = new NodeCryptoProvider();

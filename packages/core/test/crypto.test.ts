@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NodeCryptoProvider } from '../src/security/crypto-provider.js';
+import { NodeCryptoProvider } from '../src/platform/node/index.js';
 import { DecryptionError } from '../src/security/types.js';
 
 describe('Cryptographic Primitives (X25519, HKDF, ChaCha20-Poly1305)', () => {

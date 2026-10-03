@@ -2,7 +2,6 @@ import {
   FileBlocker,
   SenderSession,
   ReceiverSession,
-  NodeCryptoProvider,
   computeSha256,
   SenderDisplayHarness,
   ReceiverMeasurementHarness,
@@ -10,6 +9,7 @@ import {
   type TransportPacket,
   type EccLevel,
 } from '../packages/core/dist/index.js';
+import { NodeCryptoProvider } from '../packages/core/dist/platform/node/index.js';
 
 console.log('='.repeat(80));
 console.log('LUMALINK PHASE 4 — OPTICAL CHANNEL & PHYSICAL CAPTURE BENCHMARK');

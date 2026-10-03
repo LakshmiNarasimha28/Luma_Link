@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NodeCryptoProvider } from '../src/security/crypto-provider.js';
+import { NodeCryptoProvider } from '../src/platform/node/index.js';
 import { AuthorizationManager } from '../src/security/authorization.js';
 import { SessionSecurityContext, deriveSessionKeys } from '../src/security/security-context.js';
 import { DecryptionError, ReplayError } from '../src/security/types.js';

@@ -7,8 +7,8 @@ import {
   applySaltAndPepperNoise,
   applyPartialObstruction,
   type TransportPacket,
-  NodeCryptoProvider,
 } from '../src/index.js';
+import { NodeCryptoProvider } from '../src/platform/node/index.js';
 
 describe('Phase 3 Visual Codec — QR Baseline', () => {
   const codec = new QrVisualCodec();

@@ -3,13 +3,13 @@ import {
   FileBlocker,
   SenderSession,
   ReceiverSession,
-  NodeCryptoProvider,
   SimulatedChannel,
   BinaryPacketCodec,
   computeSha256,
   DecryptionError,
   AuthorizationManager,
 } from '@lumalink/core';
+import { NodeCryptoProvider } from '@lumalink/core/node';
 
 describe('Phase 2 Encrypted Transfer Pipeline Integration', () => {
   const crypto = new NodeCryptoProvider();

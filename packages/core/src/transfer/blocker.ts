@@ -1,16 +1,22 @@
-import { createHash } from 'node:crypto';
 import type { SourceBlock } from '../fec/types.js';
+import { Hasher, defaultHasher, computeSha256 } from './hasher.js';
+import { bytesToSessionId } from '../packet/binary-codec.js';
+
+export { computeSha256 };
 
 export interface BlockerConfig {
   /** Size of each individual source/encoded symbol in bytes. Default: 256 bytes */
   readonly symbolSize: number;
   /** Number of source symbols per source block (K). Default: 64 symbols */
   readonly symbolsPerBlock: number;
+  /** Pluggable SHA-256 Hasher. Default: standard portable hasher */
+  readonly hasher?: Hasher;
 }
 
-export const DEFAULT_BLOCKER_CONFIG: BlockerConfig = {
+export const DEFAULT_BLOCKER_CONFIG: Required<BlockerConfig> = {
   symbolSize: 256,
   symbolsPerBlock: 64,
+  hasher: defaultHasher,
 };
 
 export interface FileManifest {
@@ -25,10 +31,20 @@ export interface FileManifest {
 }
 
 /**
- * Computes hexadecimal SHA-256 hash using Node's standard crypto module.
+ * Generates a standard UUID v4 session ID using available entropy without node:crypto.
  */
-export function computeSha256(data: Uint8Array): string {
-  return createHash('sha256').update(data).digest('hex');
+export function generateSessionId(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // UUID v4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // Variant 10
+  return bytesToSessionId(bytes);
 }
 
 /**
@@ -37,12 +53,13 @@ export function computeSha256(data: Uint8Array): string {
  * Padding is strictly recorded so it can be discarded upon reassembly.
  */
 export class FileBlocker {
-  readonly config: BlockerConfig;
+  readonly config: Required<BlockerConfig>;
 
   constructor(config: Partial<BlockerConfig> = {}) {
     this.config = {
       symbolSize: config.symbolSize ?? DEFAULT_BLOCKER_CONFIG.symbolSize,
       symbolsPerBlock: config.symbolsPerBlock ?? DEFAULT_BLOCKER_CONFIG.symbolsPerBlock,
+      hasher: config.hasher ?? defaultHasher,
     };
 
     if (this.config.symbolSize < 1) {
@@ -60,10 +77,11 @@ export class FileBlocker {
     fileBytes: Uint8Array,
     fileName: string = 'file.bin',
     mimeType: string = 'application/octet-stream',
-    sessionId: string = crypto.randomUUID(),
+    sessionId?: string,
   ): { manifest: FileManifest; blocks: SourceBlock[] } {
+    const finalSessionId = sessionId ?? generateSessionId();
     const fileSize = fileBytes.length;
-    const sha256Digest = computeSha256(fileBytes);
+    const sha256Digest = this.config.hasher.hashSha256(fileBytes);
     const { symbolSize, symbolsPerBlock } = this.config;
     const rawBlockSize = symbolSize * symbolsPerBlock;
 
@@ -77,7 +95,7 @@ export class FileBlocker {
         data: new Uint8Array(symbolSize), // 1 zeroed symbol
       };
       const manifest: FileManifest = {
-        sessionId,
+        sessionId: finalSessionId,
         fileName,
         fileSize: 0,
         mimeType,
@@ -112,7 +130,7 @@ export class FileBlocker {
     }
 
     const manifest: FileManifest = {
-      sessionId,
+      sessionId: finalSessionId,
       fileName,
       fileSize,
       mimeType,

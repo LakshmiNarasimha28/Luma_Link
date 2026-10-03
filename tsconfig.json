@@ -5,7 +5,8 @@
     "composite": false,
     "noEmit": true,
     "paths": {
-      "@lumalink/core": ["./packages/core/src/index.ts"]
+      "@lumalink/core": ["./packages/core/src/index.ts"],
+      "@lumalink/core/node": ["./packages/core/src/platform/node/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*", "packages/*/test/**/*", "tests/**/*", "vitest.config.ts"]
