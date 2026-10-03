@@ -11,6 +11,7 @@
     "test": "vitest run",
     "bench": "node --experimental-strip-types benchmarks/phase1-transfer.bench.ts",
     "bench:phase4": "node --experimental-strip-types benchmarks/phase4-optical.bench.ts",
+    "generate:packets": "node --experimental-strip-types scripts/generate-phase5b-packets.ts && prettier --write scripts/display-harness/real-packets.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{ts,js,mjs,json,md,yml,yaml}\"",

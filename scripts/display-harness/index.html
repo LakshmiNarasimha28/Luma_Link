@@ -101,16 +101,17 @@
     }
   </style>
   <script src="./qrcode.min.js"></script>
+  <script src="./real-packets.js"></script>
 </head>
 <body>
   <header>
     <h1>LumaLink Optical Sender Display Harness</h1>
-    <p class="subtitle">Controlled Physical Screen Presentation for Camera Characterization (Phase 4)</p>
+    <p class="subtitle">Controlled Physical Screen Presentation for Real Protocol Transmission (Phase 5B)</p>
   </header>
 
   <div class="display-container">
     <canvas id="qrCanvas" width="400" height="400"></canvas>
-    <div class="hud-bar" id="hudBar">Frame 1/4 | A | 66 ms (15 Hz) | R=1</div>
+    <div class="hud-bar" id="hudBar">Ready</div>
   </div>
 
   <div class="controls">
@@ -156,8 +157,8 @@
     <div class="control-group" style="grid-column: span 2;">
       <label for="sequenceSelect">Test Sequence</label>
       <select id="sequenceSelect">
+        <option value="REAL_PACKETS">Real LumaLink Protocol Packets (K=16, 64B Symbol, AEAD Encrypted, LT Fountain)</option>
         <option value="ABCD">Sequential Test Pattern: Frame A, Frame B, Frame C, Frame D</option>
-        <option value="FOUNTAIN_8">Fountain Symbol Simulation (8 distinct block packets)</option>
         <option value="SINGLE_FRAME">Single Static QR (Focus & Distance Calibration)</option>
       </select>
     </div>
@@ -179,27 +180,76 @@
     let timerId = null;
     let currentFrameIndex = 0;
 
+    function parsePacketHeader(raw) {
+      if (!(raw instanceof Uint8Array) || raw.length < 42) return null;
+      if (raw[0] !== 0x4c || raw[1] !== 0x55 || raw[2] !== 0x4d || raw[3] !== 0x41) return null;
+      var view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+      var version = view.getUint8(4);
+      var type = view.getUint8(5);
+      var flags = view.getUint8(6);
+      var sessionIdHex = Array.from(raw.subarray(8, 12))
+        .map(function (b) { return b.toString(16).padStart(2, '0'); })
+        .join('');
+      var blockIndex = view.getUint32(24, false);
+      var symbolId = view.getUint32(28, false);
+      var k = view.getUint16(32, false);
+      var degree = view.getUint16(34, false);
+      var payloadLen = view.getUint16(36, false);
+      var crc = view.getUint32(38, false);
+      return {
+        version: version,
+        type: type,
+        flags: flags,
+        sessionIdShort: sessionIdHex,
+        blockIndex: blockIndex,
+        symbolId: symbolId,
+        k: k,
+        degree: degree,
+        payloadLen: payloadLen,
+        crcHex: '0x' + crc.toString(16).padStart(8, '0'),
+        wireLength: raw.length
+      };
+    }
+
+    const realPackets =
+      window.LUMALINK_REAL_PACKETS && Array.isArray(window.LUMALINK_REAL_PACKETS.packets)
+        ? window.LUMALINK_REAL_PACKETS.packets
+        : [];
+
     const sequences = {
+      REAL_PACKETS: realPackets,
       ABCD: ['FRAME_A', 'FRAME_B', 'FRAME_C', 'FRAME_D'],
-      FOUNTAIN_8: [
-        'LUMA:s01:b00:sym01', 'LUMA:s01:b00:sym02', 'LUMA:s01:b00:sym03', 'LUMA:s01:b00:sym04',
-        'LUMA:s01:b00:sym05', 'LUMA:s01:b00:sym06', 'LUMA:s01:b00:sym07', 'LUMA:s01:b00:sym08'
-      ],
       SINGLE_FRAME: ['LUMALINK-OPTICAL-CALIBRATION-V4']
     };
 
-    function renderQr(text) {
+    function renderQr(payload) {
       const ecc = eccSelect.value;
       const scale = parseInt(scaleSelect.value, 10);
+      const data = payload instanceof Uint8Array ? [{ data: payload, mode: 'byte' }] : payload;
 
-      QRCode.toCanvas(canvas, text, {
-        errorCorrectionLevel: ecc,
-        scale: scale,
-        margin: 4,
-        color: { dark: '#000000', light: '#ffffff' }
-      }, (err) => {
-        if (err) console.error(err);
-      });
+      QRCode.toCanvas(
+        canvas,
+        data,
+        {
+          errorCorrectionLevel: ecc,
+          scale: scale,
+          margin: 4,
+          color: { dark: '#000000', light: '#ffffff' }
+        },
+        (err) => {
+          if (err) console.error(err);
+        }
+      );
+    }
+
+    function updateHud(payload, frameNum, totalFrames, interval, rep) {
+      const hz = Math.round(1000 / interval);
+      const header = parsePacketHeader(payload);
+      if (header) {
+        hudBar.textContent = `Frame ${frameNum}/${totalFrames} | Blk ${header.blockIndex} | Sym ${header.symbolId} | K=${header.k} | deg=${header.degree} | ${header.wireLength} B | Session ${header.sessionIdShort}... | ${interval} ms (${hz} Hz) | R=${rep}`;
+      } else {
+        hudBar.textContent = `Frame ${frameNum}/${totalFrames} | ${payload} | ${interval} ms (${hz} Hz) | R=${rep}`;
+      }
     }
 
     function tick() {
@@ -207,12 +257,19 @@
 
       const seqKey = sequenceSelect.value;
       const list = sequences[seqKey];
+      if (!list || list.length === 0) {
+        hudBar.textContent = 'Error: No packets available for ' + seqKey;
+        return;
+      }
+
       const payload = list[currentFrameIndex % list.length];
       const interval = parseInt(intervalSelect.value, 10);
       const rep = parseInt(repetitionSelect.value, 10);
+      const frameNum = (currentFrameIndex % list.length) + 1;
+      const totalFrames = list.length;
 
       renderQr(payload);
-      hudBar.textContent = `Frame ${(currentFrameIndex % list.length) + 1}/${list.length} | ${payload} | ${interval} ms (${Math.round(1000/interval)} Hz) | R=${rep}`;
+      updateHud(payload, frameNum, totalFrames, interval, rep);
 
       currentFrameIndex++;
       timerId = setTimeout(tick, interval * rep);
@@ -232,8 +289,25 @@
       }
     });
 
-    // Initial render
-    renderQr(sequences.ABCD[0]);
+    sequenceSelect.addEventListener('change', () => {
+      const list = sequences[sequenceSelect.value];
+      if (list && list.length > 0) {
+        const interval = parseInt(intervalSelect.value, 10);
+        const rep = parseInt(repetitionSelect.value, 10);
+        renderQr(list[0]);
+        updateHud(list[0], 1, list.length, interval, rep);
+      }
+    });
+
+    // Initial render: real packets if available, otherwise fallback to calibration
+    const initialList = sequences[sequenceSelect.value] || sequences.REAL_PACKETS;
+    if (initialList && initialList.length > 0) {
+      renderQr(initialList[0]);
+      updateHud(initialList[0], 1, initialList.length, parseInt(intervalSelect.value, 10), parseInt(repetitionSelect.value, 10));
+    } else {
+      renderQr(sequences.ABCD[0]);
+      hudBar.textContent = 'Ready';
+    }
   </script>
 </body>
 </html>
