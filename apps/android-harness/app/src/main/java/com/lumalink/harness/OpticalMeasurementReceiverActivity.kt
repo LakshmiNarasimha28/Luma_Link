@@ -147,7 +147,8 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
             frameWidth = lastFrameWidth,
             frameHeight = lastFrameHeight,
             roiWidth = roiWidth,
-            roiHeight = roiHeight
+            roiHeight = roiHeight,
+            protocolStatus = "Idle"
         )
     }
 
@@ -217,15 +218,61 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
             totalQrDetected++
             totalDecodeLatencyMs += latencyMs
 
-            val text = result.text
-            val rawPayload = result.rawBytes ?: text.toByteArray(Charsets.UTF_8)
-            val payloadBytes = rawPayload.size
+            // Phase 5C.1: Extract exact binary byte segments (DO NOT use rawBytes or text)
+            val binaryPayload = QrBytePayloadExtractor.extract(result)
+            val payloadBytes = binaryPayload?.size ?: 0
             totalDecodedBytes += payloadBytes
+
+            var protocolStatus: String
+            var packetId: String
+            var rawClassificationBytes: ByteArray
+
+            if (binaryPayload != null) {
+                try {
+                    val packet = LumaPacketCodec.decode(binaryPayload)
+                    // Valid LumaLink packet
+                    protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | B=${packet.blockIndex} | SYM=${packet.symbolId} | K=${packet.k} | D=${packet.degree}"
+                    packetId = "${packet.sessionIdUuid.take(8)}-${packet.blockIndex}-${packet.symbolId}"
+                    rawClassificationBytes = packet.rawBytes
+                } catch (e: ChecksumMismatchException) {
+                    protocolStatus = "INVALID (CRC FAIL)"
+                    packetId = "crc-fail-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: MalformedPacketException) {
+                    protocolStatus = "INVALID (BAD MAGIC)"
+                    packetId = "bad-magic-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: TruncatedPacketException) {
+                    protocolStatus = "INVALID (TRUNCATED)"
+                    packetId = "truncated-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: TrailingDataException) {
+                    protocolStatus = "INVALID (TRAILING DATA)"
+                    packetId = "trailing-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: UnsupportedProtocolVersionException) {
+                    protocolStatus = "INVALID (UNSUPPORTED VERSION)"
+                    packetId = "bad-version-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: InvalidPacketTypeException) {
+                    protocolStatus = "INVALID (BAD TYPE)"
+                    packetId = "bad-type-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                } catch (e: LumaPacketException) {
+                    protocolStatus = "INVALID (MALFORMED)"
+                    packetId = "malformed-${frame.timestampMs}"
+                    rawClassificationBytes = binaryPayload
+                }
+            } else {
+                protocolStatus = "INVALID (NO BYTE SEGMENT)"
+                packetId = result.text.ifEmpty { "no-byte-segment-${frame.timestampMs}" }
+                rawClassificationBytes = ByteArray(0)
+            }
 
             // Three-Tier Duplicate Classification
             val classification = duplicateClassifier.classify(
-                rawPayload = rawPayload,
-                packetId = text,
+                rawPayload = rawClassificationBytes,
+                packetId = packetId,
                 timestampMs = frame.timestampMs
             )
 
@@ -242,7 +289,8 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
                     frameWidth = frame.width,
                     frameHeight = frame.height,
                     roiWidth = roi.width,
-                    roiHeight = roi.height
+                    roiHeight = roi.height,
+                    protocolStatus = protocolStatus
                 )
             }
         } catch (e: NotFoundException) {
@@ -263,7 +311,8 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
                     frameWidth = frame.width,
                     frameHeight = frame.height,
                     roiWidth = roi.width,
-                    roiHeight = roi.height
+                    roiHeight = roi.height,
+                    protocolStatus = "Searching..."
                 )
             }
         } finally {
@@ -283,7 +332,8 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         frameWidth: Int,
         frameHeight: Int,
         roiWidth: Int,
-        roiHeight: Int
+        roiHeight: Int,
+        protocolStatus: String = "Idle"
     ) {
         binding.tvFrameMetrics.text = String.format(
             "Frame: Seq #%d | Cam: %.1f FPS (Dec: %.1f) | %dx%d (ROI %dx%d) | Jitter: %.1f ms",
@@ -295,6 +345,8 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
             if (payloadBytes > 0) "Detected" else "Searching...",
             latencyMs, payloadBytes, version, ecc
         )
+
+        binding.tvProtocolMetrics.text = "Protocol: $protocolStatus"
 
         binding.tvDuplicateClassification.text = "Classification: $classification"
 

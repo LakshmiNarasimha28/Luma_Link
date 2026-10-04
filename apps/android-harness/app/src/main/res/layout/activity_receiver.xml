@@ -62,6 +62,16 @@
             android:layout_marginTop="2dp" />
 
         <TextView
+            android:id="@+id/tvProtocolMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Protocol: Idle"
+            android:textColor="#00FFCC"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+        <TextView
             android:id="@+id/tvDuplicateClassification"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
