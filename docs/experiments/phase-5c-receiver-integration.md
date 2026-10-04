@@ -179,19 +179,212 @@ This guarantees bit-exact matching with the canonical TypeScript core across all
 
 ---
 
-## 8. Explicit Non-Goals & Deferrals to Phase 5C.2+
+## 8. Phase 5C.1 Verification Summary
 
-The following components were intentionally **not** implemented in Phase 5C.1:
+- **Android Unit Tests**: `./gradlew testDebugUnitTest` $\to$ **35 passed, 0 failed**.
+- **Android Assembly**: `./gradlew assembleDebug` $\to$ **BUILD SUCCESSFUL**.
+- **Android Lint**: `./gradlew lintDebug` $\to$ **0 errors**.
 
-- ChaCha20-Poly1305 AEAD decryption on Android
-- X25519 ECDH key agreement on Android
-- HKDF-SHA256 key derivation on Android
-- Key envelopes and key bootstrap protocols
-- Replay protection database integration
+---
+
+## 9. Phase 5C.2 — Native Android AEAD Decryption & Security Context
+
+### 9.1 Objective & Architectural Scope
+
+Phase 5C.2 extends the Android optical receiver pipeline from raw framing and CRC-32 validation directly into authenticated ChaCha20-Poly1305 AEAD symbol decryption:
+
+```
+Physical Monitor Display (scripts/display-harness/index.html)
+    │
+    ▼ [Airgap Optical Channel]
+Android CameraX (720p Y-Plane Luminance Capture, Center ROI)
+    │
+    ▼ [MultiFormatReader / Pure Java ZXing]
+ResultMetadataType.BYTE_SEGMENTS (122-Byte Wire Stream)
+    │
+    ▼ [LumaPacketCodec]
+42-Byte Big-Endian Header Parsing + IEEE 802.3 CRC-32 Validation
+    │
+    ▼ [Session Identification]
+PreProvisionedSessionStore.get(packet.sessionId)
+    │
+    ▼ [LumaSecurityContext]
+LumaReplayProtector ("${direction}:${packetTypeCode}:${blockIndex}:${symbolId}")
+    │
+    ▼ [Canonical Nonce & AAD Construction]
+12-Byte Nonce + 26-Byte AAD
+    │
+    ▼ [Wire Tag/Ciphertext Adaptor]
+[TAG (16B) || CIPHERTEXT (64B)] ──> [CIPHERTEXT (64B) || TAG (16B)]
+    │
+    ▼ [AndroidOpenSSL / JCA]
+ChaCha20-Poly1305 Decryption & Poly1305 MAC Verification
+    │
+    ▼ [Authenticated Plaintext]
+Exact 64-Byte Recovered Fountain Plaintext Symbol
+    │
+    ▼ [Diagnostic HUD Overlay]
+"LUMA | DATA | 122 B | CRC OK | DECRYPT OK (64 B) | B=0 | SYM=0 | K=16 | D=1"
+```
+
+---
+
+### 9.2 Cryptographic Invariants & Platform Primitives
+
+The implementation exclusively uses native Android platform cryptography (`AndroidOpenSSL` via standard JCA APIs), adding zero external dependencies (no Bouncy Castle, Conscrypt, Tink, or libsodium):
+
+1. **X25519 Key Agreement**:
+   - Platform service: `KeyAgreement.getInstance("X25519")` (with fallback to `"XDH"`).
+   - Raw 32-byte key import via standard ASN.1 DER wrapping (`X509EncodedKeySpec` with SPKI header for public keys, `PKCS8EncodedKeySpec` with PKCS#8 header for private keys).
+   - Validated against canonical shared-secret golden vector (`c639664aff13ee...`).
+
+2. **RFC 5869 HKDF-SHA256**:
+   - HKDF-Extract: `PRK = HMAC-SHA256(salt, IKM)`.
+   - HKDF-Expand: `OKM = HMAC-SHA256(PRK, T(i-1) || info || i)`.
+   - Derives 32-byte ChaCha20-Poly1305 encryption key and 3-byte structured nonce salt prefix.
+
+3. **ChaCha20-Poly1305 AEAD**:
+   - Platform service: `Cipher.getInstance("ChaCha20-Poly1305")`.
+   - `SecretKeySpec(key, "ChaCha20")` and `IvParameterSpec(nonce)`.
+   - `updateAAD(aad)`.
+
+---
+
+### 9.3 Wire Tag/Ciphertext Ordering Adaptation (`testWireTagCiphertextOrdering`)
+
+A fundamental convention difference exists between LumaLink's canonical wire specification and Java Cryptography Architecture (JCA):
+
+- **LumaLink Wire Format**:
+  $$\text{Payload} = [\text{Poly1305 Tag } (16\text{ B})] \parallel [\text{Ciphertext } (N\text{ B})]$$
+- **JCA Convention**:
+  $$\text{Buffer} = [\text{Ciphertext } (N\text{ B})] \parallel [\text{Poly1305 Tag } (16\text{ B})]$$
+
+`AndroidCryptoProvider` and `LumaSecurityContext` perform byte-exact reordering:
+
+- **Decryption**:
+  ```kotlin
+  val jcaBuffer = ByteArray(ciphertext.size + tag.size)
+  System.arraycopy(ciphertext, 0, jcaBuffer, 0, ciphertext.size)
+  System.arraycopy(tag, 0, jcaBuffer, ciphertext.size, tag.size)
+  cipher.doFinal(jcaBuffer)
+  ```
+- **Encryption**:
+  ```kotlin
+  val jcaEncrypted = cipher.doFinal(plaintext)
+  val ciphertextLen = jcaEncrypted.size - 16
+  val wirePayload = ByteArray(jcaEncrypted.size)
+  System.arraycopy(jcaEncrypted, ciphertextLen, wirePayload, 0, 16)
+  System.arraycopy(jcaEncrypted, 0, wirePayload, 16, ciphertextLen)
+  ```
+
+This exact conversion is verified by the mandatory unit test `testWireTagCiphertextOrdering`.
+
+---
+
+### 9.4 Nonce & AAD Formats
+
+#### 12-Byte Structured Nonce (`LumaNonce`)
+
+- `[0]`: Domain Tag (`0x02` for sender DATA; Bit 7 = direction [0=sender, 1=receiver], Bits 3..0 = packetTypeCode [2=DATA])
+- `[1..3]`: Salt Prefix (3 bytes from session keys)
+- `[4..7]`: Block Index (uint32 big-endian)
+- `[8..11]`: Symbol ID (uint32 big-endian)
+
+#### 26-Byte Associated Authenticated Data (`LumaAad`)
+
+- `[0..15]`: Session ID (16 raw UUID bytes)
+- `[16..19]`: Block Index (uint32 big-endian)
+- `[20..23]`: Symbol ID (uint32 big-endian)
+- `[24]`: Packet Type Code (uint8, `2` for DATA)
+- `[25]`: Flags (uint8, `0x02` for `FLAG_ENCRYPTED`)
+
+---
+
+### 9.5 Replay Protection Semantics (`LumaReplayProtector`)
+
+`LumaReplayProtector` strictly mirrors canonical TypeScript `ReplayProtector`:
+
+- Tracking key: `"${direction}:${packetTypeCode}:${blockIndex}:${symbolId}"`.
+- Supports out-of-order fountain symbol reception.
+- Provides strict domain separation (DATA does not block CONTROL) and direction separation (sender messages do not block receiver messages).
+- Contains NO Android-specific LRU eviction, maxTracked bounding, or time-based expiry.
+
+---
+
+### 9.6 Session Keys & Test-Only Fixture Isolation
+
+To prevent cryptographic secrets from being hardcoded in production receiver code:
+
+1. `SessionKeys` is a pure data holder with redacted `toString()` (`[32 bytes REDACTED]`).
+2. `PreProvisionedSessionStore` is a dynamic, thread-safe registry containing zero hardcoded secrets.
+3. `TestFixtureSessions` contains all fixed golden vectors, keys, and session material in a dedicated test fixture module.
+
+---
+
+### 9.7 Diagnostic Receiver HUD States
+
+`OpticalMeasurementReceiverActivity` updates the HUD to distinguish all 4 protocol states:
+
+1. **Successful Decryption**:
+   `LUMA | DATA | 122 B | CRC OK | DECRYPT OK (64 B) | B=0 | SYM=0 | K=16 | D=1`
+2. **Replay Detected**:
+   `LUMA | DATA | 122 B | CRC OK | DECRYPT FAIL (REPLAY) | B=0 | SYM=0`
+3. **Authentication Failure (Tampered or Wrong Key)**:
+   `LUMA | DATA | 122 B | CRC OK | DECRYPT FAIL (AUTH) | B=0 | SYM=0`
+4. **Unrecognized Session**:
+   `LUMA | DATA | 122 B | CRC OK | SESSION UNKNOWN | B=0 | SYM=0`
+
+---
+
+### 9.8 Verification Results
+
+#### Android Unit Tests (`LumaSecurityContextTest` & Suites)
+
+- `LumaSecurityContextTest`: **23/23 tests passed**
+  - `testWireTagCiphertextOrdering`: **PASSED**
+  - `testSuccessfulDecryption`: **PASSED**
+  - `testRoundTripEncryptDecrypt`: **PASSED**
+  - `testWrongKey`: **PASSED**
+  - `testWrongNonceBlockIndex`: **PASSED**
+  - `testWrongNonceSymbolId`: **PASSED**
+  - `testWrongAadPacketType`: **PASSED**
+  - `testWrongAadFlags`: **PASSED**
+  - `testModifiedCiphertext`: **PASSED**
+  - `testModifiedTag`: **PASSED**
+  - `testTruncatedPayload`: **PASSED**
+  - `testReplayDetection`: **PASSED**
+  - `testReplayDisabled`: **PASSED**
+  - `testDomainSeparation`: **PASSED**
+  - `testDirectionSeparation`: **PASSED**
+  - `testSessionIsolation`: **PASSED**
+  - `testNonceGoldenVector`: **PASSED**
+  - `testAadGoldenVector`: **PASSED**
+  - `testX25519GoldenVector`: **PASSED**
+  - `testHkdfGoldenVectors`: **PASSED**
+  - `testChaCha20Poly1305GoldenVector`: **PASSED**
+  - `testCompleteTransportPacketDecryption`: **PASSED**
+  - `testPhase5bPacketWithEphemeralKeyFailsAuthControlled`: **PASSED**
+- Total Android Unit Tests: **63 passed, 0 failed, 0 skipped**.
+- Android Assembly: **BUILD SUCCESSFUL**.
+- Android Lint: **0 errors**.
+
+#### Repository Verification
+
+- TypeScript Tests: `pnpm run test` $\to$ **22 test files, 153 tests passed**.
+- Typecheck: `pnpm run typecheck` $\to$ **0 errors**.
+- Lint: `pnpm run lint` $\to$ **0 warnings/errors**.
+- Format: `pnpm run format:check` $\to$ **Clean**.
+- Monorepo Build: `pnpm run build` $\to$ **Clean**.
+
+---
+
+### 9.9 Explicit Non-Goals & Deferrals to Phase 5D+
+
+The following features remain explicitly outside Phase 5C.2:
+
+- Dynamic key bootstrap (SessionAnnouncement, AuthRequest, AuthResponse, key envelope exchange)
+- Reverse optical channel signaling
 - LT fountain peeling decoder on Android
 - Multi-packet file reassembly
-- SHA-256 file integrity verification
-- MANIFEST / SYNC / CONTROL packet deserialization schemas
-- Reverse optical channel signaling
-- JavaScript / WebAssembly runtime on Android (QuickJS, WebView, React Native)
-- Native C++/Rust/JNI integrations
+- File-level SHA-256 validation
+- MANIFEST / CONTROL / SYNC deserialization schemas

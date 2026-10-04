@@ -15,6 +15,10 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.NotFoundException
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.common.HybridBinarizer
+import com.lumalink.harness.crypto.DecryptionException
+import com.lumalink.harness.crypto.PreProvisionedSessionStore
+import com.lumalink.harness.crypto.ReplayException
+import com.lumalink.harness.crypto.TestFixtureSessions
 import com.lumalink.harness.databinding.ActivityReceiverBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -85,6 +89,9 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         binding = ActivityReceiverBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // Phase 5C.2: Register pre-provisioned test sessions for physical verification
+        TestFixtureSessions.registerTestSessions()
+
         cameraCaptureManager = CameraCaptureManager(
             context = this,
             lifecycleOwner = this,
@@ -101,6 +108,31 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
 
         binding.btnLaunchSender.setOnClickListener {
             startActivity(Intent(this, OpticalSenderDisplayActivity::class.java))
+        }
+
+        binding.btnRunCryptoSpike.setOnClickListener {
+            val result = com.lumalink.harness.crypto.AndroidCryptoCompatibilityRunner.runDiagnostics()
+            val scrollView = android.widget.ScrollView(this).apply {
+                val tv = android.widget.TextView(this@OpticalMeasurementReceiverActivity).apply {
+                    text = result.report
+                    setPadding(32, 32, 32, 32)
+                    typeface = android.graphics.Typeface.MONOSPACE
+                    textSize = 10f
+                    setTextIsSelectable(true)
+                }
+                addView(tv)
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Crypto Spike Results")
+                .setView(scrollView)
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Copy to Clipboard") { _, _ ->
+                    val clipboard = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("LumaLink Crypto Spike", result.report)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(this, "Report copied to clipboard!", Toast.LENGTH_SHORT).show()
+                }
+                .show()
         }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
@@ -134,6 +166,7 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         cameraIntervalTracker.reset()
         decoderIntervalTracker.reset()
         duplicateClassifier.reset()
+        PreProvisionedSessionStore.get(TestFixtureSessions.GOLDEN_SESSION_ID_BYTES)?.replayProtector?.reset()
         pendingDecodeFrame.set(null)
         updateHudUI(
             cameraFps = 0.0,
@@ -230,9 +263,35 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
             if (binaryPayload != null) {
                 try {
                     val packet = LumaPacketCodec.decode(binaryPayload)
-                    // Valid LumaLink packet
-                    protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | B=${packet.blockIndex} | SYM=${packet.symbolId} | K=${packet.k} | D=${packet.degree}"
-                    packetId = "${packet.sessionIdUuid.take(8)}-${packet.blockIndex}-${packet.symbolId}"
+                    // Valid LumaLink packet framing & CRC: identify session and decrypt
+                    val securityContext = PreProvisionedSessionStore.get(packet.sessionId)
+                    if (securityContext != null) {
+                        try {
+                            val plaintext = securityContext.decryptFromWirePayload(
+                                blockIndex = packet.blockIndex,
+                                symbolId = packet.symbolId,
+                                wirePayload = packet.payload,
+                                packetTypeCode = packet.packetType,
+                                flags = packet.flags,
+                                checkReplay = true,
+                                direction = "sender"
+                            )
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT OK (${plaintext.size} B) | B=${packet.blockIndex} | SYM=${packet.symbolId} | K=${packet.k} | D=${packet.degree}"
+                            packetId = "${packet.sessionIdUuid.take(8)}-${packet.blockIndex}-${packet.symbolId}"
+                        } catch (e: ReplayException) {
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT FAIL (REPLAY) | B=${packet.blockIndex} | SYM=${packet.symbolId}"
+                            packetId = "replay-${packet.blockIndex}-${packet.symbolId}-${frame.timestampMs}"
+                        } catch (e: DecryptionException) {
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT FAIL (AUTH) | B=${packet.blockIndex} | SYM=${packet.symbolId}"
+                            packetId = "auth-fail-${packet.blockIndex}-${packet.symbolId}-${frame.timestampMs}"
+                        } catch (e: Exception) {
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT FAIL (ERROR)"
+                            packetId = "decrypt-error-${frame.timestampMs}"
+                        }
+                    } else {
+                        protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | SESSION UNKNOWN | B=${packet.blockIndex} | SYM=${packet.symbolId}"
+                        packetId = "unknown-session-${packet.sessionIdUuid.take(8)}-${frame.timestampMs}"
+                    }
                     rawClassificationBytes = packet.rawBytes
                 } catch (e: ChecksumMismatchException) {
                     protocolStatus = "INVALID (CRC FAIL)"
