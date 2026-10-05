@@ -60,6 +60,9 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
     private val decoderIntervalTracker = IntervalTracker(60)
     private val duplicateClassifier = DuplicateClassifier(cameraDuplicateThresholdMs = 40L)
 
+    // Phase 5C.3: Canonical LT/Fountain Decoder
+    private val lumaLtDecoder = com.lumalink.harness.fec.LumaLtDecoder(defaultSymbolSize = 64)
+
     // Optical metrics counters
     private var startTimeMs: Long = 0L
     private var totalCameraFrames: Long = 0L
@@ -167,6 +170,7 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         decoderIntervalTracker.reset()
         duplicateClassifier.reset()
         PreProvisionedSessionStore.get(TestFixtureSessions.GOLDEN_SESSION_ID_BYTES)?.replayProtector?.reset()
+        lumaLtDecoder.reset()
         pendingDecodeFrame.set(null)
         updateHudUI(
             cameraFps = 0.0,
@@ -276,7 +280,25 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
                                 checkReplay = true,
                                 direction = "sender"
                             )
-                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT OK (${plaintext.size} B) | B=${packet.blockIndex} | SYM=${packet.symbolId} | K=${packet.k} | D=${packet.degree}"
+
+                            // Phase 5C.3: Ingest authenticated symbol into canonical LT/Fountain decoder
+                            lumaLtDecoder.addSymbol(
+                                blockIndex = packet.blockIndex,
+                                symbolId = packet.symbolId,
+                                k = packet.k,
+                                data = plaintext,
+                                degree = packet.degree
+                            )
+                            val isBlockComplete = lumaLtDecoder.isBlockComplete(packet.blockIndex)
+                            val recoveredCount = lumaLtDecoder.getBlockDecoder(packet.blockIndex)?.recoveredSymbolCount ?: 0
+
+                            val fecStatus = if (isBlockComplete) {
+                                "FEC: $recoveredCount/${packet.k} (100% COMPLETE)"
+                            } else {
+                                "FEC: $recoveredCount/${packet.k}"
+                            }
+
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT OK (${plaintext.size} B) | B=${packet.blockIndex} | SYM=${packet.symbolId} | $fecStatus"
                             packetId = "${packet.sessionIdUuid.take(8)}-${packet.blockIndex}-${packet.symbolId}"
                         } catch (e: ReplayException) {
                             protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT FAIL (REPLAY) | B=${packet.blockIndex} | SYM=${packet.symbolId}"

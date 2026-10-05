@@ -384,7 +384,207 @@ The following features remain explicitly outside Phase 5C.2:
 
 - Dynamic key bootstrap (SessionAnnouncement, AuthRequest, AuthResponse, key envelope exchange)
 - Reverse optical channel signaling
-- LT fountain peeling decoder on Android
 - Multi-packet file reassembly
 - File-level SHA-256 validation
 - MANIFEST / CONTROL / SYNC deserialization schemas
+
+---
+
+## 10. Phase 5C.3 — Android LT/Fountain Decoder Integration
+
+### 10.1 Executive Summary & Architectural Pipeline
+
+Phase 5C.3 integrates the canonical LumaLink TypeScript Luby Transform (LT) / Fountain decoder into the Android receiver harness. The conceptual decoding pipeline is:
+
+```
+Physical CameraX / ZXing
+    │
+    ▼
+QrBytePayloadExtractor (BYTE_SEGMENTS)
+    │
+    ▼
+LumaPacketCodec.decode() (Framing & CRC-32 Validation)
+    │
+    ▼
+PreProvisionedSessionStore (Session Lookup)
+    │
+    ▼
+LumaSecurityContext.decryptFromWirePayload() (ChaCha20-Poly1305 AEAD Decryption)
+    │
+    ▼ [Authenticated 64-byte Plaintext LT Symbol]
+LumaLtDecoder.addSymbol()
+    │
+    ▼
+BlockDecoder (Canonical Degree & Neighbor Derivation, XOR Reduction, LIFO Ripple Peeling)
+    │
+    ▼ [K=16 / 16 Source Symbols Recovered]
+Reconstructed 1024-Byte Source Block (reconstructBlock())
+    │
+    ▼
+STOP (File Reassembly & SHA-256 Intentionally Deferred to Phase 5C.4 / Phase 6)
+```
+
+---
+
+### 10.2 Canonical TypeScript Parity Strategy
+
+The Android LT implementation reproduces the exact mathematical, algorithmic, and stateful behavior of `@lumalink/core` (`packages/core/src/fec/`):
+
+1. **Mulberry32 PRNG (`Prng.kt`)**:
+   - 32-bit unsigned state initialized with `seed >>> 0` (if state is 0, falls back to `0x6d2b79f5`).
+   - Bitwise arithmetic:
+     - `state = (state + 0x6d2b79f5)`
+     - `t = (state ^ (state >>> 15)) * (1 | state)`
+     - `t = (t + ((t ^ (t >>> 7)) * (61 | t))) ^ t`
+     - returns `(t ^ (t >>> 14)) >>> 0`
+   - `nextFloat()`: converts unsigned 32-bit integer to `Double` divided by `4294967296.0`.
+   - `nextInt(min, max)`: inclusive range `min + floor(nextFloat() * (max - min + 1))`.
+
+2. **Robust Soliton Distribution (`RobustSolitonDistribution.kt`)**:
+   - Parameters: $c = 0.1$, $\delta = 0.05$.
+   - Robust spike calculation: $R = c \cdot \ln(K / \delta) \cdot \sqrt{K}$, $\text{pivot} = \max(1, \min(K, \lfloor K / R \rfloor))$.
+   - Ideal soliton $\rho(d)$ and robust spike $\tau(d)$ normalized to cumulative distribution function (CDF) in double precision.
+   - `sampleDegree()`: deterministic binary search over CDF using PRNG float.
+   - `sampleNeighbors()`: partial Fisher-Yates shuffle selecting random indices within shuffle window $[i, K - 1]$, returning sorted ascending indices.
+
+3. **Symbol Seed Derivation (`LtFountainMath.kt`)**:
+   - `deriveSymbolSeed(blockIndex, symbolId)`:
+     - Multiplies blockIndex and symbolId by prime constants `0x9e3779b9` and `0x85ebca6b`.
+     - Preserves exact 32-bit integer truncation at each stage.
+   - Packet Degree Validation (Section 6):
+     - The LT graph is canonically derived from `(k, blockIndex, symbolId)`.
+     - Packet `degree` field is used strictly as a consistency check.
+     - Disagreement between `packet.degree` and canonically derived degree results in controlled rejection of the malformed symbol without inserting into the graph or crashing the decoder worker.
+
+4. **Single-Block Peeling Decoder (`BlockDecoder.kt`)**:
+   - State: `sourceSymbols: Array<ByteArray?>(K)`, `recoveredSymbolCount`, `equations: MutableSet<Equation>`, `sourceToEquations: MutableMap<Int, MutableSet<Equation>>`, `rippleQueue: ArrayDeque<Equation>`, `receivedSymbolIds: MutableSet<Long>`.
+   - Peeling order: TypeScript uses `rippleQueue.pop()!` (LIFO). Kotlin strictly uses `ArrayDeque.removeLast()` to preserve identical equation reduction traversal order.
+   - XOR cancellation: `(a[i].toInt() xor b[i].toInt()).toByte()` ensuring signed Kotlin bytes do not alter raw binary symbol data.
+   - Reconstruct: returns concatenated $K \times \text{symbolSize}$ bytes once `recoveredSymbolCount == K`.
+
+5. **Multi-Block Manager (`LumaLtDecoder.kt`)**:
+   - Manages independent `BlockDecoder` instances keyed by `blockIndex`.
+   - Supports out-of-order blocks, out-of-order symbols, duplicate arrivals, and parallel blocks.
+
+---
+
+### 10.3 Kotlin Semantic Traps Identified and Mitigated
+
+1. **Unsigned Integer Division in `nextFloat()`**:
+   - _Trap_: Casting signed Kotlin `Int` directly to `Double` produces negative values when bit 31 is set.
+   - _Mitigation_: Masked with `0xFFFFFFFFL` before conversion: `(u32.toLong() and 0xFFFFFFFFL).toDouble() / 4294967296.0`.
+2. **Double-to-Int Truncation in Seed Multiplication**:
+   - _Trap_: In JavaScript, `x * 0x9e3779b9` uses 64-bit IEEE 754 floats before bitwise operators truncate to 32 bits.
+   - _Mitigation_: 32-bit signed Kotlin `Int` multiplication truncates identically modulo $2^{32}$, matching `Math.imul(x, C)`.
+3. **Ripple Queue Traversal Order**:
+   - _Trap_: Using `removeFirst()` (FIFO) alters the peeling graph reduction order when multiple equations have degree 1 simultaneously.
+   - _Mitigation_: `ArrayDeque.removeLast()` strictly matches JavaScript `Array.pop()` (LIFO).
+4. **Equation Set Identity**:
+   - _Trap_: Using a Kotlin `data class` for `Equation` hashes mutable byte arrays and unresolved neighbor sets, corrupting hash tables when mutated during peeling.
+   - _Mitigation_: Regular `class Equation` with reference identity `equals`/`hashCode`, exactly matching JavaScript object references in `Set<Equation>`.
+
+---
+
+### 10.4 Deterministic Golden Parity Vectors
+
+Verified across TypeScript and Kotlin unit tests:
+
+#### Mulberry32 (Seed = 42)
+
+- `nextUint32()` #1: `0x99e1ef7c`
+- `nextUint32()` #2: `0x72c32b8a`
+- `nextUint32()` #3: `0xda3b32c0`
+- `nextFloat()` (subsequent call #4): `0.6697340414393693`
+- `nextFloat()` (subsequent call #5): `0.17481389874592423`
+- Fresh generator call #1: `0x99e1ef7c / 4294967296.0 = 0.6011037519201636`
+
+#### Symbol Seeds (`blockIndex = 0`)
+
+- `sym 0`: `0x00000000` (`0L`)
+- `sym 1`: `0xcb72770f` (`3413276431L`)
+- `sym 2`: `0xfebe41f4` (`4273881588L`)
+- `sym 3`: `0x5197cd6a` (`1368903018L`)
+- `sym 4`: `0x41c6db49` (`1103551305L`)
+
+#### Symbol Neighbors ($K = 16, \text{blockIndex} = 0$)
+
+- `sym 0`: degree `1`, neighbors: `[3]`
+- `sym 1`: degree `13`, neighbors: `[0, 1, 3, 4, 5, 6, 8, 9, 10, 12, 13, 14, 15]`
+- `sym 2`: degree `1`, neighbors: `[3]`
+- `sym 3`: degree `6`, neighbors: `[0, 2, 7, 8, 13, 14]`
+- `sym 4`: degree `2`, neighbors: `[10, 14]`
+
+---
+
+### 10.5 Authenticated Receiver Integration & Security Boundary
+
+In `OpticalMeasurementReceiverActivity.kt`, the LT decoder is connected strictly downstream of successful AEAD authentication:
+
+```kotlin
+val plaintext = securityContext.decryptFromWirePayload(...)
+
+// Phase 5C.3: Ingest authenticated symbol into canonical LT/Fountain decoder
+lumaLtDecoder.addSymbol(
+    blockIndex = packet.blockIndex,
+    symbolId = packet.symbolId,
+    k = packet.k,
+    data = plaintext,
+    degree = packet.degree
+)
+```
+
+The HUD reflects real-time peeling progress:
+
+- During decoding: `LUMA | DATA | 122 B | CRC OK | DECRYPT OK (64 B) | B=0 | SYM=X | FEC: Y/16`
+- On completion: `LUMA | DATA | 122 B | CRC OK | DECRYPT OK (64 B) | B=0 | SYM=X | FEC: 16/16 (100% COMPLETE)`
+
+Security Boundary Invariants:
+
+1. **Unauthenticated Packets**: Unknown session ID rejects packet before decryption; zero symbols reach the LT decoder.
+2. **Tampered Ciphertext**: ChaCha20-Poly1305 tag verification fails (`DecryptionException`); zero symbols reach the LT decoder.
+3. **Tampered AAD**: Packet framing/flags altered fails AEAD verification (`DecryptionException`); zero symbols reach the LT decoder.
+4. **Replay Protection**: Replayed packet rejected by `LumaReplayProtector` (`ReplayException`); zero duplicates reach the LT decoder.
+5. **Inconsistent Degree**: Packets claiming a degree differing from canonical derivation are rejected without insertion.
+
+---
+
+### 10.6 Test Fixture & Parity Test Suite
+
+#### Test-Only Integration Fixture (`LtPacketIntegrationFixture.kt`)
+
+- Located strictly in `app/src/test/java/com/lumalink/harness/fec/`.
+- Zero secrets in production source code.
+- Generates a deterministic 1024-byte source block ($K=16$, $\text{symbolSize}=64$).
+- Canonical LT encoding produces 20 valid 122-byte wire packets authenticated with the Phase 5C.2 golden session keys.
+- Also added as sequence `GOLDEN_FEC_BLOCK_16` to `scripts/display-harness/index.html` for physical camera validation on the Samsung Galaxy M04.
+
+#### Automated Test Verification Results
+
+- **Android Unit & Integration Tests**: `./gradlew testDebugUnitTest` $\to$ **98/98 tests passed** (0 failures, 0 skipped).
+  - `PrngTest`: 7 tests passed (Mulberry32 golden vectors).
+  - `RobustSolitonDistributionTest`: 7 tests passed (CDF, degree & neighbor bounds).
+  - `LtFountainMathTest`: 3 tests passed (seed & neighbor golden parity).
+  - `BlockDecoderTest`: 8 tests passed (peeling, ripple, duplicate rejection, stalled, K=16 decode).
+  - `LumaLtDecoderTest`: 3 tests passed (multi-block isolation, auto-registration, reset).
+  - `LtPacketIntegrationTest`: 6 tests passed (full wire $\to$ CRC $\to$ AEAD $\to$ LT $\to$ source block, out-of-order, and 4 security boundaries).
+  - Existing security & packet suites (`LumaSecurityContextTest`, `LumaPacketCodecTest`, etc.): 64 tests passed.
+- **Android Assembly**: `./gradlew assembleDebug` $\to$ **BUILD SUCCESSFUL**.
+- **Android Lint**: `./gradlew lintDebug` $\to$ **0 errors**.
+- **Monorepo TypeScript Verification**:
+  - `pnpm run test` $\to$ **22 files, 153 tests passed**.
+  - `pnpm run typecheck` $\to$ **0 errors**.
+  - `pnpm run lint` $\to$ **0 warnings/errors**.
+  - `pnpm run format:check` $\to$ **Clean**.
+  - `pnpm run build` $\to$ **Clean**.
+
+---
+
+### 10.7 Phase 5C.3 Limitations & Non-Goals
+
+Phase 5C.3 intentionally stops after source block reconstruction:
+
+- File reassembly (stripping padding from source block, concatenating multiple blocks) is deferred.
+- File-level SHA-256 verification is deferred.
+- Dynamic key bootstrap (SessionAnnouncement, AuthRequest/AuthResponse) is deferred.
+- Reverse optical channel signaling is deferred.
+- RaptorQ or systematic LT redesigns are excluded.

@@ -82,6 +82,66 @@ object LumaPacketCodec {
     }
 
     /**
+     * Encodes a LumaLink transport packet into a deterministic wire binary buffer.
+     * Exact parity with TypeScript BinaryPacketCodec.encode.
+     */
+    fun encode(
+        version: Int = CURRENT_PROTOCOL_VERSION,
+        packetType: Int,
+        flags: Int,
+        sessionId: ByteArray,
+        blockIndex: Long,
+        symbolId: Long,
+        k: Int,
+        degree: Int,
+        payload: ByteArray
+    ): ByteArray {
+        require(sessionId.size == 16) { "Session ID must be exactly 16 bytes, received ${sessionId.size}" }
+        require(payload.size <= 65535) { "Payload size (${payload.size}) exceeds maximum 65535 bytes" }
+
+        val totalLength = PACKET_HEADER_SIZE + payload.size
+        val raw = ByteArray(totalLength)
+        val buffer = ByteBuffer.wrap(raw).order(ByteOrder.BIG_ENDIAN)
+
+        // 1. Magic 'LUMA'
+        raw[0] = MAGIC[0]
+        raw[1] = MAGIC[1]
+        raw[2] = MAGIC[2]
+        raw[3] = MAGIC[3]
+
+        // 2. Protocol Version & Packet Type
+        buffer.put(4, version.toByte())
+        buffer.put(5, packetType.toByte())
+
+        // 3. Flags & Reserved
+        buffer.put(6, (flags and 0xFF).toByte())
+        buffer.put(7, 0.toByte())
+
+        // 4. Session ID (16 bytes)
+        System.arraycopy(sessionId, 0, raw, 8, 16)
+
+        // 5. Block & Symbol Identifiers
+        buffer.putInt(24, (blockIndex and 0xFFFFFFFFL).toInt())
+        buffer.putInt(28, (symbolId and 0xFFFFFFFFL).toInt())
+
+        // 6. FEC Metadata
+        buffer.putShort(32, (k and 0xFFFF).toShort())
+        buffer.putShort(34, (degree and 0xFFFF).toShort())
+
+        // 7. Payload Length
+        buffer.putShort(36, (payload.size and 0xFFFF).toShort())
+
+        // 8. Payload bytes
+        System.arraycopy(payload, 0, raw, PACKET_HEADER_SIZE, payload.size)
+
+        // 9. Checksum: CRC32 over header[0..37] and payload[42..]
+        val checksum = computePacketChecksum(raw, payload.size)
+        buffer.putInt(38, (checksum and 0xFFFFFFFFL).toInt())
+
+        return raw
+    }
+
+    /**
      * Decodes and strictly validates a raw binary buffer into a [LumaTransportPacket].
      *
      * @param raw The raw wire byte array.
