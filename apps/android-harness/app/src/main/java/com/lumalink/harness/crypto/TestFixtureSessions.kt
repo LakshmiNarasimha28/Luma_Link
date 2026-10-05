@@ -1,5 +1,8 @@
 package com.lumalink.harness.crypto
 
+import com.lumalink.harness.transfer.LumaFileManifest
+import com.lumalink.harness.transfer.PreProvisionedManifestStore
+
 /**
  * TEST-ONLY Cryptographic Fixture and Session Provisioning.
  *
@@ -27,6 +30,43 @@ object TestFixtureSessions {
     const val GOLDEN_SESSION_ID_HEX = "09e99973c478442daf602baf76b1d795"
     const val GOLDEN_SESSION_ID_UUID = "09e99973-c478-442d-af60-2baf76b1d795"
     val GOLDEN_SESSION_ID_BYTES: ByteArray = hexToBytes(GOLDEN_SESSION_ID_HEX)
+
+    // Golden File Manifests (Phase 5C.4)
+    val GOLDEN_MANIFEST_1024B: LumaFileManifest by lazy {
+        LumaFileManifest(
+            sessionId = GOLDEN_SESSION_ID_BYTES,
+            fileName = "golden-1024.bin",
+            fileSize = 1024L,
+            sha256Digest = "6d08077b4795f29ba27c3f7802ba28d26bf8cc55f8b60e6081bbda4e15c7760f",
+            symbolSize = 64,
+            symbolsPerBlock = 16,
+            totalBlocks = 1
+        )
+    }
+
+    val GOLDEN_MANIFEST_1000B: LumaFileManifest by lazy {
+        LumaFileManifest(
+            sessionId = GOLDEN_SESSION_ID_BYTES,
+            fileName = "golden-1000.bin",
+            fileSize = 1000L,
+            sha256Digest = "0acbc8420eff771695d4a31a478b8f1627d54f8718aa6904cd4895d7eb92b7b7",
+            symbolSize = 64,
+            symbolsPerBlock = 16,
+            totalBlocks = 1
+        )
+    }
+
+    val GOLDEN_MANIFEST_2500B: LumaFileManifest by lazy {
+        LumaFileManifest(
+            sessionId = GOLDEN_SESSION_ID_BYTES,
+            fileName = "golden-2500.bin",
+            fileSize = 2500L,
+            sha256Digest = "0ed48e0f1222e6cdbb46abb0be800ab6c14dfc25a1d4342bb7a750ac4a1ed710",
+            symbolSize = 64,
+            symbolsPerBlock = 16,
+            totalBlocks = 3
+        )
+    }
 
     // X25519 Test Keys
     val ALICE_PRIV: ByteArray = hexToBytes("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
@@ -83,12 +123,16 @@ object TestFixtureSessions {
     }
 
     /**
-     * Registers the test-only session into the pre-provisioned session store.
+     * Registers the test-only session into the pre-provisioned session store and manifest store.
      */
     fun registerTestSessions() {
         PreProvisionedSessionStore.register(
             sessionId = GOLDEN_SESSION_ID_BYTES,
             context = createGoldenSecurityContext()
+        )
+        PreProvisionedManifestStore.register(
+            sessionId = GOLDEN_SESSION_ID_BYTES,
+            manifest = GOLDEN_MANIFEST_1024B
         )
     }
 }

@@ -19,6 +19,10 @@ import com.lumalink.harness.crypto.DecryptionException
 import com.lumalink.harness.crypto.PreProvisionedSessionStore
 import com.lumalink.harness.crypto.ReplayException
 import com.lumalink.harness.crypto.TestFixtureSessions
+import com.lumalink.harness.transfer.LumaFileReassembler
+import com.lumalink.harness.transfer.PreProvisionedManifestStore
+import com.lumalink.harness.transfer.ReassemblyResult
+import com.lumalink.harness.transfer.Sha256MismatchException
 import com.lumalink.harness.databinding.ActivityReceiverBinding
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -62,6 +66,14 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
 
     // Phase 5C.3: Canonical LT/Fountain Decoder
     private val lumaLtDecoder = com.lumalink.harness.fec.LumaLtDecoder(defaultSymbolSize = 64)
+
+    // Phase 5C.4: Session-bound File Reassemblers & Completed Blocks Tracking
+    // Note: Test fixtures execute on decoderExecutor; performance will be measured separately.
+    private val activeReassemblers = mutableMapOf<String, LumaFileReassembler>()
+    private val completedBlockIndices = mutableMapOf<String, MutableSet<Long>>()
+    private var lastVerifiedFileResult: ReassemblyResult? = null
+    private var fileReassemblyStatus: String? = null
+    private var transferCompletedTimestampMs: Long = 0L
 
     // Optical metrics counters
     private var startTimeMs: Long = 0L
@@ -158,6 +170,24 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         Toast.makeText(this, if (isAfAeLocked) "AF & AE Locked" else "AF & AE Auto", Toast.LENGTH_SHORT).show()
     }
 
+    private fun bytesToHex(bytes: ByteArray): String {
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            val v = b.toInt() and 0xFF
+            if (v < 16) sb.append('0')
+            sb.append(Integer.toHexString(v))
+        }
+        return sb.toString()
+    }
+
+    private fun getOrCreateReassembler(sessionId: ByteArray): LumaFileReassembler? {
+        val sessionKey = bytesToHex(sessionId)
+        return activeReassemblers.getOrPut(sessionKey) {
+            val manifest = PreProvisionedManifestStore.get(sessionId) ?: return null
+            LumaFileReassembler(manifest)
+        }
+    }
+
     private fun resetMetrics() {
         totalCameraFrames = 0
         totalDecodesAttempted = 0
@@ -171,6 +201,11 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         duplicateClassifier.reset()
         PreProvisionedSessionStore.get(TestFixtureSessions.GOLDEN_SESSION_ID_BYTES)?.replayProtector?.reset()
         lumaLtDecoder.reset()
+        activeReassemblers.clear()
+        completedBlockIndices.clear()
+        lastVerifiedFileResult = null
+        fileReassemblyStatus = null
+        transferCompletedTimestampMs = 0L
         pendingDecodeFrame.set(null)
         updateHudUI(
             cameraFps = 0.0,
@@ -292,13 +327,45 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
                             val isBlockComplete = lumaLtDecoder.isBlockComplete(packet.blockIndex)
                             val recoveredCount = lumaLtDecoder.getBlockDecoder(packet.blockIndex)?.recoveredSymbolCount ?: 0
 
+                            // Phase 5C.4: Prevent repeated reconstruction/submission of an already-completed block
+                            val sessionHex = bytesToHex(packet.sessionId)
+                            val completedBlocks = completedBlockIndices.getOrPut(sessionHex) { mutableSetOf() }
+
+                            if (isBlockComplete && !completedBlocks.contains(packet.blockIndex)) {
+                                val reassembler = getOrCreateReassembler(packet.sessionId)
+                                if (reassembler != null) {
+                                    val blockData = lumaLtDecoder.reconstructBlock(packet.blockIndex)
+                                    if (blockData != null) {
+                                        reassembler.addBlock(packet.blockIndex, blockData)
+                                        completedBlocks.add(packet.blockIndex)
+
+                                        if (reassembler.isComplete() && lastVerifiedFileResult == null) {
+                                            try {
+                                                val reassemblyResult = reassembler.reassemble()
+                                                lastVerifiedFileResult = reassemblyResult
+                                                transferCompletedTimestampMs = frame.timestampMs
+                                                fileReassemblyStatus = "FILE OK: ${reassemblyResult.fileBytes.size} B (SHA-256 OK)"
+                                            } catch (e: Sha256MismatchException) {
+                                                fileReassemblyStatus = "FILE CORRUPT (SHA-256 MISMATCH)"
+                                            } catch (e: Exception) {
+                                                fileReassemblyStatus = "FILE ERROR (${e.javaClass.simpleName})"
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Manifest lookup MUST be session-bound. Unknown/missing manifest fails closed.
+                                    fileReassemblyStatus = "MANIFEST MISSING (FAIL CLOSED)"
+                                }
+                            }
+
                             val fecStatus = if (isBlockComplete) {
                                 "FEC: $recoveredCount/${packet.k} (100% COMPLETE)"
                             } else {
                                 "FEC: $recoveredCount/${packet.k}"
                             }
 
-                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT OK (${plaintext.size} B) | B=${packet.blockIndex} | SYM=${packet.symbolId} | $fecStatus"
+                            val reassemblySuffix = if (fileReassemblyStatus != null) " | $fileReassemblyStatus" else ""
+                            protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT OK (${plaintext.size} B) | B=${packet.blockIndex} | SYM=${packet.symbolId} | $fecStatus$reassemblySuffix"
                             packetId = "${packet.sessionIdUuid.take(8)}-${packet.blockIndex}-${packet.symbolId}"
                         } catch (e: ReplayException) {
                             protocolStatus = "LUMA | ${packet.packetTypeName} | ${packet.rawBytes.size} B | CRC OK | DECRYPT FAIL (REPLAY) | B=${packet.blockIndex} | SYM=${packet.symbolId}"
@@ -447,15 +514,23 @@ class OpticalMeasurementReceiverActivity : AppCompatActivity() {
         // Level 1: Software Codec CPU Throughput (decoded bytes / CPU decode time)
         // Level 2: Physical Optical Channel Goodput (novel payload bytes / wall-clock time)
         // Level 3: End-to-End Verified Plaintext File Goodput (strictly requires SHA-256 verified file match).
-        // For the mock-symbol physical harness, Level 3 is strictly N/A (no fake/mirrored L3).
         val elapsedSec = if (startTimeMs > 0) (System.currentTimeMillis() - startTimeMs) / 1000.0 else 0.0
+        val verifiedBytes = lastVerifiedFileResult?.fileBytes?.size?.toLong() ?: 0L
+        val verifiedDurationSec = if (verifiedBytes > 0L && transferCompletedTimestampMs > startTimeMs) {
+            (transferCompletedTimestampMs - startTimeMs) / 1000.0
+        } else if (verifiedBytes > 0L) {
+            elapsedSec
+        } else {
+            0.0
+        }
+
         val goodput = GoodputCalculator.computeGoodput(
             totalDecodedBytes = totalDecodedBytes,
             totalDecodeLatencyMs = totalDecodeLatencyMs,
             uniquePayloadBytesDelivered = duplicateClassifier.uniquePayloadBytesDelivered,
             elapsedDurationSec = elapsedSec,
-            verifiedFileBytes = 0L, // No real file transfer in mock physical harness
-            verifiedTransferDurationSec = 0.0
+            verifiedFileBytes = verifiedBytes,
+            verifiedTransferDurationSec = verifiedDurationSec
         )
 
         binding.tvGoodputMetrics.text = goodput.formatHudString()
