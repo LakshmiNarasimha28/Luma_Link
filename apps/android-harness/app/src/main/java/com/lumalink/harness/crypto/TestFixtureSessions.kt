@@ -122,14 +122,39 @@ object TestFixtureSessions {
         )
     }
 
+    val GOLDEN_ANNOUNCEMENT_1024B: com.lumalink.harness.session.LumaSessionAnnouncement by lazy {
+        com.lumalink.harness.session.LumaSessionAnnouncement(
+            sessionId = GOLDEN_SESSION_ID_BYTES,
+            mode = "quick",
+            senderDeviceId = "sender-test-dev-01",
+            senderPublicKey = ALICE_PUB,
+            fileName = "golden-1024.bin",
+            fileSize = 1024L,
+            sha256Digest = "6d08077b4795f29ba27c3f7802ba28d26bf8cc55f8b60e6081bbda4e15c7760f",
+            symbolSize = 64,
+            symbolsPerBlock = 16,
+            totalBlocks = 1,
+            timestamp = 1728120000000L
+        )
+    }
+
     /**
-     * Registers the test-only session into the pre-provisioned session store and manifest store.
+     * Registers ONLY the cryptographic keys into PreProvisionedSessionStore.
+     * Does NOT register any pre-provisioned manifest, ensuring the dynamic manifest pipeline is tested.
      */
-    fun registerTestSessions() {
+    fun registerTestSessionKeys() {
         PreProvisionedSessionStore.register(
             sessionId = GOLDEN_SESSION_ID_BYTES,
             context = createGoldenSecurityContext()
         )
+    }
+
+    /**
+     * Registers the test-only session into the pre-provisioned session store and manifest store.
+     * Kept for legacy test compatibility.
+     */
+    fun registerTestSessions() {
+        registerTestSessionKeys()
         PreProvisionedManifestStore.register(
             sessionId = GOLDEN_SESSION_ID_BYTES,
             manifest = GOLDEN_MANIFEST_1024B

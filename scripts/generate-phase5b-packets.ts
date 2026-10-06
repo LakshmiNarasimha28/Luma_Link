@@ -7,6 +7,8 @@ import {
   BinaryPacketCodec,
   computeCrc32,
   PortableHasher,
+  ManifestCodec,
+  ControlCodec,
   type TransportPacket,
 } from '../packages/core/dist/index.js';
 import { NodeCryptoProvider } from '../packages/core/dist/platform/node/index.js';
@@ -83,6 +85,8 @@ export interface GenerationResult {
     readonly targetSymbols: number;
   };
   readonly sender: SenderSession;
+  readonly manifestPacket: GeneratedPacketData;
+  readonly keyEnvelopePacket: GeneratedPacketData;
   readonly packets: GeneratedPacketData[];
   readonly fixtureFilePath: string;
 }
@@ -127,6 +131,85 @@ export function generatePhase5bPackets(
     keyPair: crypto.generateKeyPair(),
   };
   const sender = new SenderSession(manifest, blocks, 'quick', senderIdentity, crypto);
+
+  // 3b. Generate, serialize, and validate canonical Session MANIFEST TransportPacket
+  const announcement = sender.getAnnouncement();
+  const manifestPayload = ManifestCodec.encode(announcement);
+  const manifestPacketObj: TransportPacket = {
+    protocolVersion: 1,
+    packetType: 'manifest',
+    flags: 0,
+    sessionId: manifest.sessionId,
+    blockIndex: 0,
+    symbolId: 0,
+    fecMetadata: { k: config.symbolsPerBlock, degree: 0 },
+    payload: manifestPayload,
+    checksum: 0,
+  };
+  const manifestWireBytes: Uint8Array = packetCodec.encode(manifestPacketObj);
+  const decodedManifest: TransportPacket = packetCodec.decode(manifestWireBytes);
+  if (decodedManifest.packetType !== 'manifest') {
+    throw new Error(`Manifest packetType mismatch: ${decodedManifest.packetType}`);
+  }
+  const manifestCrcView = new DataView(
+    manifestWireBytes.buffer,
+    manifestWireBytes.byteOffset,
+    manifestWireBytes.byteLength,
+  );
+  const manifestWireCrc = manifestCrcView.getUint32(38, false);
+  const manifestPacketData: GeneratedPacketData = {
+    symbolId: 0,
+    blockIndex: 0,
+    k: config.symbolsPerBlock,
+    degree: 0,
+    wireBytes: manifestWireBytes,
+    wireLength: manifestWireBytes.length,
+    crc32Hex: `0x${manifestWireCrc.toString(16).padStart(8, '0')}`,
+  };
+
+  // 3c. Generate canonical pre-arranged KeyEnvelope CONTROL packet sealed for test receiver Bob
+  const bobPublicKey = new Uint8Array([
+    0x88, 0x31, 0x86, 0xb8, 0x00, 0xb4, 0x1d, 0x5c, 0xf0, 0x42, 0x96, 0x95, 0xda, 0x9b, 0x3c, 0xc4,
+    0xf3, 0x28, 0xeb, 0xcd, 0x18, 0x4a, 0x6e, 0x48, 0x2f, 0xa5, 0x78, 0xc1, 0x03, 0xf0, 0x6c, 0x77,
+  ]);
+  const bobKeyEnvelope = sender.authManager.createKeyEnvelope('device-bob', bobPublicKey);
+  const authResponsePayload = ControlCodec.encodeAuthResponse({
+    sessionId: manifest.sessionId,
+    receiverDeviceId: 'device-bob',
+    state: 'authorized',
+    keyEnvelope: bobKeyEnvelope,
+  });
+  const keyEnvelopePacketObj: TransportPacket = {
+    protocolVersion: 1,
+    packetType: 'control',
+    flags: 0,
+    sessionId: manifest.sessionId,
+    blockIndex: 0,
+    symbolId: 1, // messageId = 1
+    fecMetadata: { k: 0, degree: 0 },
+    payload: authResponsePayload,
+    checksum: 0,
+  };
+  const keyEnvelopeWireBytes: Uint8Array = packetCodec.encode(keyEnvelopePacketObj);
+  const decodedEnvelopePacket: TransportPacket = packetCodec.decode(keyEnvelopeWireBytes);
+  if (decodedEnvelopePacket.packetType !== 'control') {
+    throw new Error(`Control packetType mismatch: ${decodedEnvelopePacket.packetType}`);
+  }
+  const keyEnvelopeCrcView = new DataView(
+    keyEnvelopeWireBytes.buffer,
+    keyEnvelopeWireBytes.byteOffset,
+    keyEnvelopeWireBytes.byteLength,
+  );
+  const keyEnvelopeWireCrc = keyEnvelopeCrcView.getUint32(38, false);
+  const keyEnvelopePacketData: GeneratedPacketData = {
+    symbolId: 1,
+    blockIndex: 0,
+    k: 0,
+    degree: 0,
+    wireBytes: keyEnvelopeWireBytes,
+    wireLength: keyEnvelopeWireBytes.length,
+    crc32Hex: `0x${keyEnvelopeWireCrc.toString(16).padStart(8, '0')}`,
+  };
 
   // 4. Determine transmitted packet budget from K * overheadFactor
   const targetSymbols = Math.ceil(block.k * config.overheadFactor);
@@ -236,6 +319,14 @@ export function generatePhase5bPackets(
     generatedAt: ${JSON.stringify(new Date().toISOString())},
   };
 
+  // Canonical Session Announcement MANIFEST packet (${manifestPacketData.wireLength} bytes, CRC ${manifestPacketData.crc32Hex})
+  var manifestPacket =
+${formatUint8ArrayForFixture(manifestPacketData.wireBytes)};
+
+  // Canonical Pre-Arranged KeyEnvelope CONTROL packet (${keyEnvelopePacketData.wireLength} bytes, CRC ${keyEnvelopePacketData.crc32Hex})
+  var keyEnvelopePacket =
+${formatUint8ArrayForFixture(keyEnvelopePacketData.wireBytes)};
+
   var packets = [
 ${generatedPackets
   .map(
@@ -250,6 +341,8 @@ ${generatedPackets
   var root = typeof window !== 'undefined' ? window : globalThis;
   root.LUMALINK_REAL_PACKETS = {
     manifest: manifest,
+    manifestPacket: manifestPacket,
+    keyEnvelopePacket: keyEnvelopePacket,
     packets: packets,
   };
 })();
@@ -275,6 +368,8 @@ ${generatedPackets
       targetSymbols,
     },
     sender,
+    manifestPacket: manifestPacketData,
+    keyEnvelopePacket: keyEnvelopePacketData,
     packets: generatedPackets,
     fixtureFilePath: config.outputPath,
   };

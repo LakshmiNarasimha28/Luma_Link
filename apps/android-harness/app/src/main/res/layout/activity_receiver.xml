@@ -72,6 +72,16 @@
             android:layout_marginTop="2dp" />
 
         <TextView
+            android:id="@+id/tvManifestMetrics"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Manifest: None (Awaiting Announcement)"
+            android:textColor="#FF88FF"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:layout_marginTop="2dp" />
+
+        <TextView
             android:id="@+id/tvDuplicateClassification"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

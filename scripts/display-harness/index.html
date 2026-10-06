@@ -157,6 +157,10 @@
     <div class="control-group" style="grid-column: span 2;">
       <label for="sequenceSelect">Test Sequence</label>
       <select id="sequenceSelect">
+        <option value="REAL_INTERLEAVED">Phase 6.4 Real Stream: MANIFEST + KEY_ENVELOPE + 39 DATA Packets</option>
+        <option value="GOLDEN_INTERLEAVED_MANIFEST_KEY_FEC">Phase 6.4 Golden Stream: MANIFEST + KEY_ENVELOPE + FEC Packets (Session 09e99973...)</option>
+        <option value="GOLDEN_KEY_ENVELOPE_ONLY">Phase 6.3/6.4 Pre-Arranged Key Envelope Only (Sealed to Bob)</option>
+        <option value="GOLDEN_MANIFEST_ONLY">Phase 6.2 Dynamic Manifest Only (Session Announcement 09e99973...)</option>
         <option value="REAL_PACKETS">Real LumaLink Protocol Packets (K=16, 64B Symbol, AEAD Encrypted, LT Fountain)</option>
         <option value="GOLDEN_FEC_BLOCK_16">Phase 5C.3 Authenticated LT Block (20 Packets, K=16, 100% Reconstruction)</option>
         <option value="GOLDEN_DATA_PACKET">Phase 5C Pre-Provisioned Test DATA Packet (Decryptable, Session 09e99973...)</option>
@@ -260,7 +264,47 @@
     ];
     const goldenFecBlock16Packets = goldenFecBlock16Hex.map(hexToBytes);
 
+    // Phase 6.2 Golden 186-byte MANIFEST packet (matching pre-provisioned session 09e99973...)
+    const goldenManifestHex = "4c554d410101000009e99973c478442daf602baf76b1d7950000000000000000001000000090cdcebc3a0101000009e99973c478442daf602baf76b1d795000001925bfa8e000000000000000400000000010040001007a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c6d08077b4795f29ba27c3f7802ba28d26bf8cc55f8b60e6081bbda4e15c7760f1273656e6465722d746573742d6465762d3031000f676f6c64656e2d313032342e62696e";
+    const goldenManifestPacket = hexToBytes(goldenManifestHex);
+
+    // Phase 6.3 Golden 165-byte Pre-Arranged KEY_ENVELOPE packet (sealed to Bob for session 09e99973...)
+    const goldenKeyEnvelopeHex = "4c554d410104000009e99973c478442daf602baf76b1d795000000000000000100000000007b1696aed80201010009e99973c478442daf602baf76b1d7950a6465766963652d626f6207a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c0102030405060708090a0b0c1935484bafc94cd575abf6609c3976dbc13a4d685e8ecb2601828972a12879f2b6d746fd554be3c4bf55eeeefe111b24";
+    const goldenKeyEnvelopePacket = hexToBytes(goldenKeyEnvelopeHex);
+
+    const realManifestPacket =
+      window.LUMALINK_REAL_PACKETS && window.LUMALINK_REAL_PACKETS.manifestPacket
+        ? window.LUMALINK_REAL_PACKETS.manifestPacket
+        : null;
+
+    const realKeyEnvelopePacket =
+      window.LUMALINK_REAL_PACKETS && window.LUMALINK_REAL_PACKETS.keyEnvelopePacket
+        ? window.LUMALINK_REAL_PACKETS.keyEnvelopePacket
+        : null;
+
+    // Helper: create interleaved sequence emitting:
+    // MANIFEST -> KEY_ENVELOPE (pre-arranged) -> DATA -> DATA -> DATA -> MANIFEST...
+    function createInterleavedSequence(manifestPkt, envelopePkt, dataPackets, interval = 3) {
+      const result = [];
+      for (let i = 0; i < dataPackets.length; i++) {
+        if (i % interval === 0) {
+          if (manifestPkt) result.push(manifestPkt);
+          if (envelopePkt) result.push(envelopePkt);
+        }
+        result.push(dataPackets[i]);
+      }
+      return result;
+    }
+
+    const goldenInterleavedPackets = createInterleavedSequence(goldenManifestPacket, goldenKeyEnvelopePacket, goldenFecBlock16Packets, 3);
+    const realInterleavedPackets = realManifestPacket ? createInterleavedSequence(realManifestPacket, realKeyEnvelopePacket, realPackets, 3) : realPackets;
+
     const sequences = {
+      GOLDEN_INTERLEAVED_MANIFEST_KEY_FEC: goldenInterleavedPackets,
+      GOLDEN_INTERLEAVED_MANIFEST_FEC: goldenInterleavedPackets,
+      GOLDEN_KEY_ENVELOPE_ONLY: [goldenKeyEnvelopePacket],
+      GOLDEN_MANIFEST_ONLY: [goldenManifestPacket],
+      REAL_INTERLEAVED: realInterleavedPackets,
       REAL_PACKETS: realPackets,
       GOLDEN_FEC_BLOCK_16: goldenFecBlock16Packets,
       GOLDEN_DATA_PACKET: [goldenDataPacket],
@@ -292,7 +336,12 @@
       const hz = Math.round(1000 / interval);
       const header = parsePacketHeader(payload);
       if (header) {
-        hudBar.textContent = `Frame ${frameNum}/${totalFrames} | Blk ${header.blockIndex} | Sym ${header.symbolId} | K=${header.k} | deg=${header.degree} | ${header.wireLength} B | Session ${header.sessionIdShort}... | ${interval} ms (${hz} Hz) | R=${rep}`;
+        const typeName = header.type === 1 ? 'MANIFEST' : header.type === 2 ? 'DATA' : 'TYPE_' + header.type;
+        if (header.type === 1) {
+          hudBar.textContent = `Frame ${frameNum}/${totalFrames} | [${typeName}] | ${header.wireLength} B | Session ${header.sessionIdShort}... | ${interval} ms (${hz} Hz) | R=${rep}`;
+        } else {
+          hudBar.textContent = `Frame ${frameNum}/${totalFrames} | [${typeName}] Blk ${header.blockIndex} | Sym ${header.symbolId} | K=${header.k} | deg=${header.degree} | ${header.wireLength} B | Session ${header.sessionIdShort}... | ${interval} ms (${hz} Hz) | R=${rep}`;
+        }
       } else {
         hudBar.textContent = `Frame ${frameNum}/${totalFrames} | ${payload} | ${interval} ms (${hz} Hz) | R=${rep}`;
       }
